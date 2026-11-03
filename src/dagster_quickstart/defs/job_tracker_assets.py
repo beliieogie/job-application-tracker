@@ -5,7 +5,10 @@ from dagster import asset, define_asset_job, ScheduleDefinition
 from googleapiclient.errors import HttpError
 from dagster_quickstart.defs.gmail import get_gmail_service, search_emails, get_message_body, extract_body
 from dagster_quickstart.defs.sheets import get_sheet
-from dagster_quickstart.defs.classifier import classify_email, extract_company_name, normalize_company
+from dagster_quickstart.defs.classifier import (
+    classify_email, extract_company_name, normalize_company,
+    sender_domain, is_automated_domain,
+)
 from dagster_quickstart.defs.staleness import check_stale_applications
 
 
@@ -33,6 +36,7 @@ def new_job_applications() -> list[dict]:
 
     existing_rows = worksheet.get_all_records()
     existing_companies = {normalize_company(row["Company"]) for row in existing_rows if row["Company"]}
+    existing_domains = {row.get("Domain", "") for row in existing_rows if row.get("Domain")}
 
     # Widened from 1d to 30d — duplicate-checking above makes it safe to re-scan
     # a larger window each run, so gaps between runs no longer cause missed applications
@@ -62,7 +66,13 @@ def new_job_applications() -> list[dict]:
             print(f"SKIPPED (low confidence): {company!r} — subject: {subject!r}, sender: {sender!r}")
             continue
 
+        domain = sender_domain(sender)
+        own_domain = domain if domain and not is_automated_domain(sender) else ""
+
         if normalize_company(company) in existing_companies:
+            continue
+        if own_domain and own_domain in existing_domains:
+            print(f"SKIPPED (domain already tracked): {company!r} via {own_domain}")
             continue
 
         try:
@@ -71,8 +81,10 @@ def new_job_applications() -> list[dict]:
         except (TypeError, ValueError):
             date_str = datetime.today().strftime("%-m/%-d/%Y")
 
-        new_row = [company, date_str, "", "", ""]
+        new_row = [company, date_str, "", "", "", "", own_domain]
         existing_companies.add(normalize_company(company))
+        if own_domain:
+            existing_domains.add(own_domain)
         worksheet.append_row(new_row, value_input_option="USER_ENTERED")
         print(f"Added new row: {company} (date: {date_str}, from subject: {subject!r}, sender: {sender!r})")
 

@@ -1,5 +1,9 @@
 import html
+import os
 import re
+from dotenv import load_dotenv
+
+load_dotenv()
 
 COMPANY_SUBJECT_PATTERNS = [
     r"applying to .*\bat ([A-Z][\w&.,' -]+?)(?:\s*[-|!]|\s*$)",      # "applying to <role> at X"
@@ -16,7 +20,11 @@ DISPLAY_NAME_NOISE_WORDS = {
     "no-reply", "noreply",
 }
 
-KNOWN_NON_COMPANY_NAMES = {"annabelle mazagwu", "annabelle", "mazagwu", "gmail", "greenhouse", "team"}
+# Personal names to exclude live in .env (gitignored) so they're not in the repo
+KNOWN_NON_COMPANY_NAMES = {
+    n.strip().lower() for n in os.getenv("JOB_TRACKER_EXCLUDE_NAMES", "").split(",") if n.strip()
+} | {"gmail", "greenhouse", "team", "adp", "ultipro", "myworkday",
+     "workday", "wellfound", "welcome to the jungle", "linkedin", "indeed"}
 
 # Recruiters emailing from personal accounts: the display name is a person, not a company
 PERSONAL_EMAIL_DOMAINS = {
@@ -30,7 +38,25 @@ PERSON_DISPLAY_NAME_DOMAINS = {"paylocity.com"}
 SUBJECT_FIRST_DOMAINS = {"icims.com", "icims.eu"}
 
 # ATS platforms that send from <company>@domain, so the part before @ is the employer
-LOCAL_PART_DOMAINS = {"myworkday.com"}
+LOCAL_PART_DOMAINS = {"myworkday.com", "icims.com", "icims.eu"}
+
+# ATS platforms that send from <company>.<platform>, so the first label is the employer
+SUBDOMAIN_FIRST_DOMAINS = {"teamtailor-mail.com", "teamtailor.com"}
+
+# Job boards, aggregators and sales outreach: never an employer
+BLOCKED_SENDER_DOMAINS = {
+    "scale.jobs", "theladders.com", "upwork.com", "ziprecruiter.com",
+    "indeed.com", "linkedin.com", "glassdoor.com", "wellfound.com",
+    "welcometothejungle.com", "dice.com", "monster.com",
+}
+
+# Senders whose display name or domain never yields the name you want
+DOMAIN_COMPANY_OVERRIDES = {
+    "macysandbloomingdalesjobs.com": "Macy's",
+    "pmc.com": "Penske Media Corp",
+    "slrconsulting.com": "SLR Consulting",
+    "hioscar.com": "Oscar Health"
+}
 
 GENERIC_LOCAL_PARTS = {
     "no-reply", "noreply", "donotreply", "do-not-reply", "notifications",
@@ -43,6 +69,7 @@ BODY_REJECTION_KEYWORDS = [
     "not moving forward", "other candidates", "decided not to proceed",
     "will not be moving forward", "pursue other candidates",
     "not be moving your application forward",
+    "see an ideal fit", "not a fit at this time", "were not selected",
 ]
 
 
@@ -95,7 +122,9 @@ ATS_PLATFORM_NAMES = {
 AUTOMATED_DOMAIN_PATTERNS = [
     "greenhouse.io", "greenhouse-mail.io", "myworkday.com", "lever.co",
     "smartrecruiters.com", "icims.com", "ashbyhq.com", "gomotive.com", "icims.eu",
-    "paylocity.com"
+    "paylocity.com", "bamboohr.com", "rippling.com", "ukg.net",
+    "teamtailor-mail.com", "teamtailor.com", "workable.com", "jobvite.com",
+    "breezy.hr", "recruitee.com", "successfactors.com", "taleo.net",
 ]
 
 REJECTION_KEYWORDS = [
@@ -166,6 +195,12 @@ def extract_company_from_display_name(sender: str) -> str | None:
     if "<" not in sender:
         return None
     display = sender.split("<")[0].strip().strip('"').strip()
+    display = re.sub(r"\s*\([^)]*\)\s*$", "", display).strip()
+    display = re.sub(r"^@\s*", "", display).strip()
+    display = re.sub(r"^(jobs|careers|recruiting)\s+at\s+", "", display, flags=re.IGNORECASE).strip()
+    # "Macy's, Bluemercury and Bloomingdale's" -> "Macy's"; a comma alone (Cadent, LLC) is left alone
+    if " and " in display and "," in display:
+        display = display.split(",")[0].strip()
     if not display:
         return None
 
@@ -209,15 +244,25 @@ def extract_company_name(subject: str, sender: str) -> tuple[str, bool]:
     subject_first = domain_in(sender, SUBJECT_FIRST_DOMAINS)
     company = None
 
+    if domain_in(sender, BLOCKED_SENDER_DOMAINS):
+        return sender_domain(sender), False
+
+    override = DOMAIN_COMPANY_OVERRIDES.get(sender_domain(sender))
+    if override:
+        return override, True
+
     if subject_first:
         company = _company_from_subject(subject)
+    # <company>@domain beats a display name that may be a recruiter or a longer legal name
+    if company is None and domain_in(sender, LOCAL_PART_DOMAINS):
+        company = company_from_local_part(sender)
+    if company is None and domain_in(sender, SUBDOMAIN_FIRST_DOMAINS):
+        company = sender_domain(sender).split(".")[0].capitalize()    
     if company is None and not person_display:
         company = extract_company_from_display_name(sender)
     if company is None and not subject_first:
         company = _company_from_subject(subject)
 
-    if company is None and domain_in(sender, LOCAL_PART_DOMAINS):
-        company = company_from_local_part(sender)
 
     if company is None:
         # Domain fallback is meaningless for gmail.com, paylocity.com, etc.
@@ -277,6 +322,11 @@ if __name__ == "__main__":
         ("PUBLICISGROUPE <publicisgroupe+autoreply@talent.icims.eu>", "Thank You for Applying to Epsilon"),
         ("quickbase@myworkday.com", "Thank You For Applying!"),
         ("no-reply@us.greenhouse-mail.io", "Thank you for applying to Gusto, Annabelle!"),
+        ("Leela Yanamaddi <hello@scale.jobs>", "Why we use humans instead of AI"),
+        ("Jobs at Macy's, Bluemercury and Bloomingdale's <jobs@macysandbloomingdalesjobs.com>", "Thank You! We received your job application"),
+        ("careers@pmc.com", "Application Update from"),
+        ("Joe Holt - sunday <no-reply@sunday.teamtailor-mail.com>", "Thanks for applying"),
+        ("@ DualEntry <no-reply@dualentry.com>", "Thanks for applying"),
     ]
     for sender, subject in company_tests:
         company, is_reliable = extract_company_name(subject, sender)
