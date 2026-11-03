@@ -3,7 +3,6 @@ from datetime import datetime
 from email.utils import parsedate_to_datetime
 from dagster import asset, define_asset_job, ScheduleDefinition
 from googleapiclient.errors import HttpError
-from dagster_quickstart.defs.gmail import get_gmail_service, search_emails, get_message_body, extract_body
 from dagster_quickstart.defs.sheets import get_sheet
 from dagster_quickstart.defs.classifier import (
     classify_email, extract_company_name, normalize_company,
